@@ -22,18 +22,26 @@ enum
 };
 
 class MainFrame;
+class CameraManager;
 
 class MainApp: public wxApp
 {
 	public:
 	virtual bool OnInit();
+	virtual int OnExit();
 	
+	bool openCamera(const std::string &id, uint64_t cameraId);
+	bool closeCamera(const std::string &id);
 	bool openCamera(const ueye::CameraInfo &camera);
 	bool closeCamera(const ueye::CameraInfo &camera);
 	bool isOpen(const ueye::CameraInfo &camera);
+	
 	private:
+	
+	static std::string cameraId(const ueye::CameraInfo &camera);
+	
 	MainFrame *Frame;
-	std::map<std::string, ueye::Camera*> Cameras;
+	std::map<std::string, CameraManager*> Cameras;
 };
 DECLARE_APP(MainApp)
 
@@ -83,27 +91,26 @@ class ConnectionButton: public wxButton
 };
 
 class DisplayTimer;
-class CameraCapture;
 class CameraDisplay: public wxGLCanvas
 {
 	public:
-	CameraDisplay(wxWindow *parent, ueye::Camera *camera);
+	CameraDisplay(wxWindow *parent);
 	virtual ~CameraDisplay();
-	virtual void OnPaint(wxPaintEvent &event);
-	virtual void OnSize(wxSizeEvent &event);
+	
+	void setImage(ueye::ImageMemory *image);
+	
+	void OnPaint(wxPaintEvent &event);
+	void OnSize(wxSizeEvent &event);
 	
 	private:
 	void init();
 	void render();
 	
-	ueye::Camera *Camera;
 	wxGLContext* Context;
 	ueye::ImageMemory *Image;
 	std::mutex ImageMutex;
 	DisplayTimer *Timer;
-	CameraCapture *Capture;
 	
-	friend class CameraCapture;
 	DECLARE_EVENT_TABLE()
 };
 
@@ -118,16 +125,19 @@ class DisplayTimer: public wxTimer
 	int Interval;
 };
 
-class CameraCapture
+class CameraManager
 {
 	public:
-	CameraCapture(CameraDisplay *display);
+	CameraManager(ueye::Camera *camera, CameraDisplay *display);
+	~CameraManager();
 	
 	void startLiveCapture();
 	void stopLiveCapture();
 	private:
 	void liveCaptureLoop();
-	CameraDisplay * Display;
+	
+	ueye::Camera *Camera;
+	CameraDisplay *Display;
 	std::vector<ueye::ImageMemory> Buffer;
 	std::thread *CaptureThread;
 	std::atomic<bool> CaptureStop;
@@ -157,35 +167,64 @@ bool MainApp::OnInit()
 	return true;
 }
 
+int MainApp::OnExit()
+{
+	Frame = NULL;
+	for(auto it=Cameras.begin(); it!=Cameras.end(); ++it)
+	{
+		closeCamera(it->first);
+	}
+}
+
+bool MainApp::openCamera(const std::string &id, uint64_t cameraId)
+{
+	CameraDisplay *display = new CameraDisplay(Frame->DisplayPanel);
+	ueye::Camera *camera = new ueye::Camera(cameraId);
+	Frame->DisplayPanel->AddPage(display, id, true);
+	Cameras[id] = new CameraManager(camera, display);
+	Cameras[id]->startLiveCapture();
+	return true;
+}
+
+bool MainApp::closeCamera(const std::string &id)
+{
+	if(Frame)
+	{
+		for(size_t i=0; i<Frame->DisplayPanel->GetPageCount(); ++i)
+		{
+			if(Frame->DisplayPanel->GetPageText(i) == id)
+			{
+				Frame->DisplayPanel->DeletePage(i);
+				break;
+			}
+		}
+		Frame->DisplayPanel->Layout();
+	}
+	Cameras[id]->stopLiveCapture();
+	delete Cameras[id];
+	Cameras.erase(id);
+	return true;
+}
+
 bool MainApp::openCamera(const ueye::CameraInfo &camera)
 {
-	std::string id = camera.SerialNumber;
-	Cameras[id] = new ueye::Camera(camera.CameraId);
-	Frame->DisplayPanel->AddPage(new CameraDisplay(Frame->DisplayPanel, Cameras[id]), id, true);
-	return true;
+	return openCamera(cameraId(camera), camera.CameraId);
 }
 
 bool MainApp::closeCamera(const ueye::CameraInfo &camera)
 {
-	std::string id = camera.SerialNumber;
-	for(size_t i=0; i<Frame->DisplayPanel->GetPageCount(); ++i)
-	{
-		if(Frame->DisplayPanel->GetPageText(i) == id)
-		{
-			Frame->DisplayPanel->DeletePage(i);
-			break;
-		}
-	}
-	Frame->DisplayPanel->Layout();
-	delete Cameras.at(id);
-	Cameras.erase(id);
-	return true;
+	return closeCamera(cameraId(camera));
 }
 
 bool MainApp::isOpen(const ueye::CameraInfo &camera)
 {
 	std::string id = camera.SerialNumber;
 	return Cameras.count(id);
+}
+
+std::string MainApp::cameraId(const ueye::CameraInfo &camera)
+{
+	return camera.SerialNumber;
 }
 
 MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
@@ -342,22 +381,25 @@ void ConnectionButton::updateState()
 }
 
 
-CameraDisplay::CameraDisplay(wxWindow *parent, ueye::Camera *camera):
-	wxGLCanvas(parent, wxID_ANY, NULL), Camera(camera), Context(NULL), Image(NULL), Timer(NULL), Capture(NULL)
+CameraDisplay::CameraDisplay(wxWindow *parent):
+	wxGLCanvas(parent, wxID_ANY, NULL), Context(NULL), Image(NULL), Timer(NULL)
 {
 	Context = new wxGLContext(this);
-	Timer = new DisplayTimer(this, 50);
-	Capture = new CameraCapture(this);
-	Capture->startLiveCapture();
+	Timer = new DisplayTimer(this, 10);
 	init();
 }
 
 CameraDisplay::~CameraDisplay()
 {
-	Capture->stopLiveCapture();
-	delete Capture;
 	delete Timer;
 	delete Context;
+}
+
+void CameraDisplay::setImage(ueye::ImageMemory *image)
+{
+	ImageMutex.lock();
+	Image = image;
+	ImageMutex.unlock();
 }
 
 void CameraDisplay::OnPaint(wxPaintEvent &)
@@ -391,6 +433,8 @@ void CameraDisplay::init()
 
 void CameraDisplay::render()
 {
+	if(!Image)
+		return;
 	SetCurrent(*Context);
 	wxPaintDC(this);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -418,40 +462,48 @@ void DisplayTimer::Notify()
 	Display->Refresh(false);
 }
 
-CameraCapture::CameraCapture(CameraDisplay *display):
-	Display(display), CaptureThread(NULL)
+CameraManager::CameraManager(ueye::Camera *camera, CameraDisplay *display):
+	Camera(camera), Display(display), CaptureThread(NULL)
 {}
 
-void CameraCapture::startLiveCapture()
+CameraManager::~CameraManager()
 {
-	Buffer = std::vector<ueye::ImageMemory>(3, ueye::ImageMemory(*(Display->Camera)));
-	CaptureStop.store(false);
-	CaptureThread = new std::thread(&CameraCapture::liveCaptureLoop, this);
-	Display->Camera->videoCaptureStart(Buffer);
+	if(CaptureThread)
+	{
+		stopLiveCapture();
+	}
+	delete Camera;
 }
 
-void CameraCapture::stopLiveCapture()
+void CameraManager::startLiveCapture()
+{
+	Buffer = std::vector<ueye::ImageMemory>(3, ueye::ImageMemory(*Camera));
+	CaptureStop.store(false);
+	CaptureThread = new std::thread(&CameraManager::liveCaptureLoop, this);
+	Camera->videoCaptureStart(Buffer);
+}
+
+void CameraManager::stopLiveCapture()
 {
 	CaptureStop.store(true);
 	CaptureThread->join();
-	Display->Camera->videoCaptureStop();
+	Camera->videoCaptureStop();
 	Buffer.clear();
+	CaptureThread = NULL;
 }
 
-void CameraCapture::liveCaptureLoop()
+void CameraManager::liveCaptureLoop()
 {
 	ueye::ImageMemory *previous_frame = NULL;
 	while(!CaptureStop.load())
 	{
-		ueye::ImageMemory *frame = Display->Camera->waitNextFrame();
-		Display->ImageMutex.lock();
-		Display->Image = frame;
-		Display->ImageMutex.unlock();
+		ueye::ImageMemory *frame = Camera->waitNextFrame();
+		Display->setImage(frame);
 		if(previous_frame)
-			Display->Camera->unlockFrame(previous_frame);
+			Camera->unlockFrame(previous_frame);
 		previous_frame = frame;
 	}
 	if(previous_frame)
-		Display->Camera->unlockFrame(previous_frame);
+		Camera->unlockFrame(previous_frame);
 }
 
