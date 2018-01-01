@@ -53,6 +53,9 @@ class ImageMemory
 	char* ptr();
 	int id() const;
 	
+	uint32_t width() const;
+	uint32_t height() const;
+	
 	void copyToMat(cv::Mat &mat)const;
 	
 	private:
@@ -68,6 +71,20 @@ class ImageMemory
 	uint8_t BitDepth;
 	int32_t ColorMode;
 };
+
+struct CameraInfo
+{
+	uint64_t CameraId;
+	uint64_t DeviceId;
+	uint64_t SensorId;
+	bool InUse;
+	std::string SerialNumber;
+	std::string ModelName;
+	std::string FullModelName;
+	uint64_t CameraStatus;
+};
+
+std::vector<CameraInfo> getCameraList();
 
 class Camera
 {

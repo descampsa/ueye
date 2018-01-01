@@ -228,12 +228,56 @@ int ImageMemory::id() const
 	return MemoryId;
 }
 
+uint32_t ImageMemory::width() const
+{
+	return Width;
+}
+
+uint32_t ImageMemory::height() const
+{
+	return Height;
+}
+
 void ImageMemory::copyToMat(cv::Mat &mat)const
 {
 	int mat_type, mat_channel;
 	matType(ColorMode, mat_type,  mat_channel);
 	mat.create(Height*mat_channel, Width, mat_type);
 	THROW_IF_ERROR(is_CopyImageMem(CameraHandle, MemoryPtr, MemoryId, mat.ptr<char>()));
+}
+
+
+std::vector<CameraInfo> getCameraList()
+{
+	HIDS CameraHandle = 0;
+	
+	INT camera_number;
+	THROW_IF_ERROR(is_GetNumberOfCameras(&camera_number));
+
+	UEYE_CAMERA_LIST *camera_list = (UEYE_CAMERA_LIST*) new uint8_t[sizeof(DWORD)+camera_number*sizeof(UEYE_CAMERA_INFO)];
+	camera_list->dwCount = camera_number;
+	THROW_IF_ERROR(is_GetCameraList(camera_list));
+	
+	std::vector<CameraInfo> result;
+	for(int i=0; i<camera_number; ++i)
+	{
+		CameraInfo info;
+		info.CameraId = camera_list->uci[i].dwCameraID;
+		info.DeviceId = camera_list->uci[i].dwDeviceID;
+		info.SensorId = camera_list->uci[i].dwSensorID;
+		info.InUse = camera_list->uci[i].dwInUse;
+		info.SerialNumber = std::string(camera_list->uci[i].SerNo, 16);
+		info.SerialNumber.resize(info.SerialNumber.find('\0'));
+		info.ModelName = std::string(camera_list->uci[i].Model, 16);
+		info.ModelName.resize(info.ModelName.find('\0'));
+		info.FullModelName = std::string(camera_list->uci[i].FullModelName, 32);
+		info.FullModelName.resize(info.FullModelName.find('\0'));
+		info.CameraStatus = camera_list->uci[i].dwStatus;
+		result.push_back(info);
+	}
+	
+	delete[] camera_list;
+	return  result;
 }
 
 
