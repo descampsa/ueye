@@ -18,6 +18,7 @@ enum
 {
 	BUTTON_UPDATE_CAMERA_LIST = wxID_HIGHEST + 1,
 	BUTTON_CONNECT_BEGIN,
+	DISPLAY_PANEL_PAGE_CHANGED,
 	BUTTON_CONNECT_END = BUTTON_CONNECT_BEGIN + MAX_CAMERA_NUMBER
 };
 
@@ -45,13 +46,13 @@ class MainApp: public wxApp
 };
 DECLARE_APP(MainApp)
 
-
+class DisplayPanel;
 class MainFrame: public wxFrame
 {
 	public:
 	MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size);
 	
-	wxNotebook *DisplayPanel;
+	DisplayPanel *Display;
 	private:
 	void OnExit(wxCommandEvent& event);
 	void OnAbout(wxCommandEvent& event);
@@ -90,6 +91,19 @@ class ConnectionButton: public wxButton
 	bool Opened;
 };
 
+class DisplayPanel: public wxNotebook
+{
+	public:
+	DisplayPanel(wxWindow *parent);
+	
+	virtual bool AddPage(wxWindow* page, const wxString& text, bool select = false, int imageId = NO_IMAGE);
+	
+	private:
+	void OnPageChanged(wxBookCtrlEvent& event);
+	wxDECLARE_EVENT_TABLE();
+	double DisplayRate;
+};
+
 class DisplayTimer;
 class CameraDisplay: public wxGLCanvas
 {
@@ -99,10 +113,14 @@ class CameraDisplay: public wxGLCanvas
 	
 	void setImage(ueye::ImageMemory *image);
 	
+	void start(int interval_ms);
+	void stop();
+	
+	private:
+	
 	void OnPaint(wxPaintEvent &event);
 	void OnSize(wxSizeEvent &event);
 	
-	private:
 	void init();
 	void render();
 	
@@ -157,6 +175,10 @@ BEGIN_EVENT_TABLE(CameraDisplay, wxGLCanvas)
 	EVT_SIZE(CameraDisplay::OnSize)
 END_EVENT_TABLE()
 
+BEGIN_EVENT_TABLE(DisplayPanel, wxNotebook)
+	EVT_NOTEBOOK_PAGE_CHANGED(DISPLAY_PANEL_PAGE_CHANGED, DisplayPanel::OnPageChanged)
+END_EVENT_TABLE()
+
 wxIMPLEMENT_APP(MainApp);
 
 bool MainApp::OnInit()
@@ -178,9 +200,9 @@ int MainApp::OnExit()
 
 bool MainApp::openCamera(const std::string &id, uint64_t cameraId)
 {
-	CameraDisplay *display = new CameraDisplay(Frame->DisplayPanel);
+	CameraDisplay *display = new CameraDisplay(Frame->Display);
 	ueye::Camera *camera = new ueye::Camera(cameraId);
-	Frame->DisplayPanel->AddPage(display, id, true);
+	Frame->Display->AddPage(display, id, true);
 	Cameras[id] = new CameraManager(camera, display);
 	Cameras[id]->startLiveCapture();
 	return true;
@@ -190,15 +212,15 @@ bool MainApp::closeCamera(const std::string &id)
 {
 	if(Frame)
 	{
-		for(size_t i=0; i<Frame->DisplayPanel->GetPageCount(); ++i)
+		for(size_t i=0; i<Frame->Display->GetPageCount(); ++i)
 		{
-			if(Frame->DisplayPanel->GetPageText(i) == id)
+			if(Frame->Display->GetPageText(i) == id)
 			{
-				Frame->DisplayPanel->DeletePage(i);
+				Frame->Display->DeletePage(i);
 				break;
 			}
 		}
-		Frame->DisplayPanel->Layout();
+		Frame->Display->Layout();
 	}
 	Cameras[id]->stopLiveCapture();
 	delete Cameras[id];
@@ -228,7 +250,7 @@ std::string MainApp::cameraId(const ueye::CameraInfo &camera)
 }
 
 MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
-	: wxFrame(NULL, wxID_ANY, title, pos, size), DisplayPanel(NULL)
+	: wxFrame(NULL, wxID_ANY, title, pos, size), Display(NULL)
 {
 	// create menu
 	wxMenu *menuFile = new wxMenu;
@@ -247,11 +269,11 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
 	wxNotebook *configurationPanel = new wxNotebook(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "configuration panel");
 	configurationPanel->AddPage(new CameraSelectionPanel(configurationPanel), "camera", true);
 	// create video viewer
-	DisplayPanel = new wxNotebook(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "display panel");
+	Display = new DisplayPanel(this);
 	// create and fill sizer with panel and vidoe viewer
 	wxBoxSizer *mainSizer = new wxBoxSizer(wxHORIZONTAL);
 	mainSizer->Add(configurationPanel, 1, wxEXPAND, 0);
-	mainSizer->Add(DisplayPanel, 3, wxEXPAND, 0);
+	mainSizer->Add(Display, 3, wxEXPAND, 0);
 	SetSizer(mainSizer);
 }
 
@@ -381,11 +403,42 @@ void ConnectionButton::updateState()
 }
 
 
+DisplayPanel::DisplayPanel(wxWindow *parent):
+	wxNotebook(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "display panel"), DisplayRate(60.0)
+{}
+
+bool DisplayPanel::AddPage(wxWindow* page, const wxString& text, bool select, int imageId)
+{
+	wxNotebook::AddPage(page, text, select, imageId);
+	CameraDisplay* display = dynamic_cast<CameraDisplay*>(page);
+	if(display)
+		display->start(1000.0/DisplayRate);
+}
+
+void DisplayPanel::OnPageChanged(wxBookCtrlEvent& event)
+{
+	std::cout<<"test"<<std::endl;
+	int old_page = event.GetOldSelection();
+	int new_page = event.GetSelection();
+	if(old_page != wxNOT_FOUND)
+	{
+		CameraDisplay *display = dynamic_cast<CameraDisplay*>(GetPage(old_page));
+		if(display)
+			display->stop();
+	}
+	if(new_page != wxNOT_FOUND)
+	{
+		CameraDisplay *display = dynamic_cast<CameraDisplay*>(GetPage(new_page));
+		if(display)
+			display->start(1000.0/DisplayRate);
+	}
+}
+
+
 CameraDisplay::CameraDisplay(wxWindow *parent):
 	wxGLCanvas(parent, wxID_ANY, NULL), Context(NULL), Image(NULL), Timer(NULL)
 {
 	Context = new wxGLContext(this);
-	Timer = new DisplayTimer(this, 10);
 	init();
 }
 
@@ -400,6 +453,19 @@ void CameraDisplay::setImage(ueye::ImageMemory *image)
 	ImageMutex.lock();
 	Image = image;
 	ImageMutex.unlock();
+}
+
+void CameraDisplay::start(int interval_ms)
+{
+	if(Timer)
+		stop();
+	Timer = new DisplayTimer(this, interval_ms);
+}
+
+void CameraDisplay::stop()
+{
+	delete Timer;
+	Timer = NULL;
 }
 
 void CameraDisplay::OnPaint(wxPaintEvent &)
