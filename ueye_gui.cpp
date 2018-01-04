@@ -545,8 +545,8 @@ void CameraManager::startLiveCapture()
 {
 	Buffer = std::vector<ueye::ImageMemory>(3, ueye::ImageMemory(*Camera));
 	CaptureStop.store(false);
-	CaptureThread = new std::thread(&CameraManager::liveCaptureLoop, this);
 	Camera->videoCaptureStart(Buffer);
+	CaptureThread = new std::thread(&CameraManager::liveCaptureLoop, this);
 }
 
 void CameraManager::stopLiveCapture()
