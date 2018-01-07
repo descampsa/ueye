@@ -351,6 +351,10 @@ Range<double> Camera::getExposureRange() const
 {
 	return ExposureRange;
 }
+std::vector<uint32_t> Camera::getPixelClockList()const
+{
+	return PixelClockList;
+}
 uint32_t Camera::getPixelClock() const
 {
 	return PixelClock;
@@ -463,6 +467,11 @@ void Camera::updateTimingInfo(Camera::TimingUpdate update)
 	UINT urange[3];
 	THROW_IF_ERROR(is_PixelClock(CameraHandle, IS_PIXELCLOCK_CMD_GET_RANGE, urange, sizeof(urange)));
 	PixelClockRange = Range<uint32_t>(urange[0], urange[1], urange[2]);
+	
+	UINT number;
+	THROW_IF_ERROR(is_PixelClock(CameraHandle, IS_PIXELCLOCK_CMD_GET_NUMBER, &number, sizeof(number)));
+	PixelClockList.resize(number);
+	THROW_IF_ERROR(is_PixelClock(CameraHandle, IS_PIXELCLOCK_CMD_GET_LIST, &(PixelClockList[0]), number*sizeof(PixelClockList[0])));
 }
 
 }

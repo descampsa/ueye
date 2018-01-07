@@ -35,6 +35,11 @@ class Range
 	T max() const {return Max;}
 	T step() const {return Step;}
 	
+	size_t stepCount()const {return std::round((Max-Min)/Step)+1;}
+	
+	size_t valueToIndex(const T &value) const{return std::round((value-Min)/Step);}
+	T indexToValue(size_t index) const{return Min+index*Step;}
+	
 	private:
 	T Min, Max, Step;
 };
@@ -106,6 +111,7 @@ class Camera
 	Range<uint32_t> getPixelClockRange() const;
 	Range<double> getFrameTimeRange() const;
 	Range<double> getExposureRange() const;
+	std::vector<uint32_t> getPixelClockList()const;
 	uint32_t getPixelClock() const;
 	double getFrameRate() const;
 	double getExposure() const;
@@ -134,6 +140,7 @@ class Camera
 	IS_RECT AOI;
 	int32_t ColorMode;
 	Range<uint32_t> PixelClockRange;
+	std::vector<uint32_t> PixelClockList;
 	Range<double> FrameTimeRange;
 	Range<double> ExposureRange;
 	uint32_t PixelClock;
