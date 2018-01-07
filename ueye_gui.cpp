@@ -17,8 +17,10 @@
 enum
 {
 	BUTTON_UPDATE_CAMERA_LIST = wxID_HIGHEST + 1,
+	SLIDER_PIXEL_CLOCK,
+	SLIDER_FRAME_TIME,
+	SLIDER_EXPOSURE,
 	BUTTON_CONNECT_BEGIN,
-	DISPLAY_PANEL_PAGE_CHANGED,
 	BUTTON_CONNECT_END = BUTTON_CONNECT_BEGIN + MAX_CAMERA_NUMBER
 };
 
@@ -28,6 +30,7 @@ class CameraManager;
 class MainApp: public wxApp
 {
 	public:
+	MainApp();
 	virtual bool OnInit();
 	virtual int OnExit();
 	
@@ -36,6 +39,9 @@ class MainApp: public wxApp
 	bool openCamera(const ueye::CameraInfo &camera);
 	bool closeCamera(const ueye::CameraInfo &camera);
 	bool isOpen(const ueye::CameraInfo &camera);
+	
+	void updateCurrentCamera();
+	CameraManager* getCurrentCamera();
 	
 	private:
 	
@@ -47,12 +53,14 @@ class MainApp: public wxApp
 DECLARE_APP(MainApp)
 
 class DisplayPanel;
+class ConfigurationPanel;
 class MainFrame: public wxFrame
 {
 	public:
 	MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size);
 	
 	DisplayPanel *Display;
+	ConfigurationPanel *Configuration;
 	private:
 	void OnExit(wxCommandEvent& event);
 	void OnAbout(wxCommandEvent& event);
@@ -60,7 +68,26 @@ class MainFrame: public wxFrame
 	wxDECLARE_EVENT_TABLE();
 };
 
-class CameraSelectionPanel: public wxPanel
+class ConfigurationPanel: public wxNotebook
+{
+	public:
+	ConfigurationPanel(wxWindow *parent);
+	
+	void setActiveCamera(CameraManager *cameraManager);
+};
+
+class CameraConfigurationBase: public wxPanel
+{
+	public:
+	CameraConfigurationBase(wxWindow *parent);
+	
+	virtual void setActiveCamera(CameraManager *cameraManager);
+	
+	protected:
+	CameraManager *CurrentCamera;
+};
+
+class CameraSelectionPanel: public CameraConfigurationBase
 {
 	public:
 	CameraSelectionPanel(wxWindow *parent);
@@ -89,6 +116,24 @@ class ConnectionButton: public wxButton
 	
 	const ueye::CameraInfo *Camera;
 	bool Opened;
+};
+
+class CameraTimingPanel: public CameraConfigurationBase
+{
+	public:
+	CameraTimingPanel(wxWindow *parent);
+	
+	virtual void setActiveCamera(CameraManager *cameraManager);
+	
+	private:
+	void OnPixelClockSlider(wxScrollEvent &event);
+	void OnFrameTimeSlider(wxScrollEvent &event);
+	void OnExposureSlider(wxScrollEvent &event);
+	void update();
+	
+	wxSlider *PixelClockSlider, *FrameTimeSlider, *ExposureSlider;
+	
+	wxDECLARE_EVENT_TABLE();
 };
 
 class DisplayPanel: public wxNotebook
@@ -143,6 +188,7 @@ class DisplayTimer: public wxTimer
 	int Interval;
 };
 
+
 class CameraManager
 {
 	public:
@@ -151,10 +197,12 @@ class CameraManager
 	
 	void startLiveCapture();
 	void stopLiveCapture();
+	
+	ueye::Camera *Camera;
+	
 	private:
 	void liveCaptureLoop();
 	
-	ueye::Camera *Camera;
 	CameraDisplay *Display;
 	std::vector<ueye::ImageMemory> Buffer;
 	std::thread *CaptureThread;
@@ -176,10 +224,20 @@ BEGIN_EVENT_TABLE(CameraDisplay, wxGLCanvas)
 END_EVENT_TABLE()
 
 BEGIN_EVENT_TABLE(DisplayPanel, wxNotebook)
-	EVT_NOTEBOOK_PAGE_CHANGED(DISPLAY_PANEL_PAGE_CHANGED, DisplayPanel::OnPageChanged)
+	EVT_NOTEBOOK_PAGE_CHANGED(wxID_ANY, DisplayPanel::OnPageChanged)
+END_EVENT_TABLE()
+
+BEGIN_EVENT_TABLE(CameraTimingPanel, wxPanel)
+	EVT_COMMAND_SCROLL_CHANGED(SLIDER_PIXEL_CLOCK, CameraTimingPanel::OnPixelClockSlider)
+	EVT_COMMAND_SCROLL(SLIDER_FRAME_TIME, CameraTimingPanel::OnFrameTimeSlider)
+	EVT_COMMAND_SCROLL(SLIDER_EXPOSURE, CameraTimingPanel::OnExposureSlider)
 END_EVENT_TABLE()
 
 wxIMPLEMENT_APP(MainApp);
+
+MainApp::MainApp():
+	wxApp(), Frame(NULL)
+{}
 
 bool MainApp::OnInit()
 {
@@ -205,6 +263,7 @@ bool MainApp::openCamera(const std::string &id, uint64_t cameraId)
 	Frame->Display->AddPage(display, id, true);
 	Cameras[id] = new CameraManager(camera, display);
 	Cameras[id]->startLiveCapture();
+	updateCurrentCamera();
 	return true;
 }
 
@@ -225,6 +284,7 @@ bool MainApp::closeCamera(const std::string &id)
 	Cameras[id]->stopLiveCapture();
 	delete Cameras[id];
 	Cameras.erase(id);
+	updateCurrentCamera();
 	return true;
 }
 
@@ -249,6 +309,27 @@ std::string MainApp::cameraId(const ueye::CameraInfo &camera)
 	return camera.SerialNumber;
 }
 
+CameraManager* MainApp::getCurrentCamera()
+{
+	if(!Frame || !Frame->Display)
+		return NULL;
+	int selected = Frame->Display->GetSelection();
+	if(selected != wxNOT_FOUND)
+	{
+		return Cameras[std::string(Frame->Display->GetPageText(selected))];
+	}
+	return NULL;
+}
+
+void MainApp::updateCurrentCamera()
+{
+	if(Frame && Frame->Configuration)
+	{
+		CameraManager* cameraManager = getCurrentCamera();
+		Frame->Configuration->setActiveCamera(cameraManager);
+	}
+}
+
 MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
 	: wxFrame(NULL, wxID_ANY, title, pos, size), Display(NULL)
 {
@@ -266,13 +347,12 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
 	SetStatusText("Status");
 	// create window content (configuration panel and video viewer, side by side)
 	// create panel
-	wxNotebook *configurationPanel = new wxNotebook(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "configuration panel");
-	configurationPanel->AddPage(new CameraSelectionPanel(configurationPanel), "camera", true);
+	Configuration = new ConfigurationPanel(this);
 	// create video viewer
 	Display = new DisplayPanel(this);
 	// create and fill sizer with panel and vidoe viewer
 	wxBoxSizer *mainSizer = new wxBoxSizer(wxHORIZONTAL);
-	mainSizer->Add(configurationPanel, 1, wxEXPAND, 0);
+	mainSizer->Add(Configuration, 1, wxEXPAND, 0);
 	mainSizer->Add(Display, 3, wxEXPAND, 0);
 	SetSizer(mainSizer);
 }
@@ -288,8 +368,36 @@ void MainFrame::OnAbout(wxCommandEvent& event)
 		"About UEye GUI", wxOK | wxICON_INFORMATION );
 }
 
+ConfigurationPanel::ConfigurationPanel(wxWindow *parent):
+	wxNotebook(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "configuration panel")
+{
+	AddPage(new CameraSelectionPanel(this), "camera", true);
+	AddPage(new CameraTimingPanel(this), "timing");
+}
+
+void ConfigurationPanel::setActiveCamera(CameraManager *cameraManager)
+{
+	for(size_t i=0; i<GetPageCount(); ++i)
+	{
+		CameraConfigurationBase *config = dynamic_cast<CameraConfigurationBase*>(GetPage(i));
+		if(config)
+		{
+			config->setActiveCamera(cameraManager);
+		}
+	}
+}
+
+CameraConfigurationBase::CameraConfigurationBase(wxWindow *parent):
+	wxPanel(parent), CurrentCamera(NULL)
+{}
+
+void CameraConfigurationBase::setActiveCamera(CameraManager *cameraManager)
+{
+	CurrentCamera = cameraManager;
+}
+
 CameraSelectionPanel::CameraSelectionPanel(wxWindow *parent):
-	wxPanel(parent), DisplayGrid(NULL), ConnectButtonSizer(NULL), GridRowHeight(25)
+	CameraConfigurationBase(parent), DisplayGrid(NULL), ConnectButtonSizer(NULL), GridRowHeight(25)
 {
 	DisplayGrid = new wxGrid(this, wxID_ANY);
 	wxButton *updateButton = new wxButton(this, BUTTON_UPDATE_CAMERA_LIST, "Update");
@@ -402,6 +510,118 @@ void ConnectionButton::updateState()
 	}
 }
 
+CameraTimingPanel::CameraTimingPanel(wxWindow *parent):
+	CameraConfigurationBase(parent), PixelClockSlider(NULL), FrameTimeSlider(NULL), ExposureSlider(NULL)
+{
+	PixelClockSlider = new wxSlider(this, SLIDER_PIXEL_CLOCK, 0, 0, 0);
+	FrameTimeSlider = new wxSlider(this, SLIDER_FRAME_TIME, 0, 0, 0);
+	ExposureSlider = new wxSlider(this, SLIDER_EXPOSURE, 0, 0, 0);
+	
+	wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
+	sizer->Add(new wxStaticText(this, wxID_ANY, "Pixel clock"));
+	sizer->Add(PixelClockSlider, 0, wxEXPAND);
+	sizer->Add(new wxStaticText(this, wxID_ANY, "Frame time"));
+	sizer->Add(FrameTimeSlider, 0, wxEXPAND);
+	sizer->Add(new wxStaticText(this, wxID_ANY, "Exposure time"));
+	sizer->Add(ExposureSlider, 0, wxEXPAND);
+	SetSizer(sizer);
+	
+	setActiveCamera(wxGetApp().getCurrentCamera());
+}
+
+void CameraTimingPanel::OnPixelClockSlider(wxScrollEvent &event)
+{
+	uint32_t pixelClock=0;
+	ueye::Range<uint32_t> pixelClockRange = CurrentCamera->Camera->getPixelClockRange();
+	std::vector<uint32_t> pixelClockList = CurrentCamera->Camera->getPixelClockList();
+	if(pixelClockRange.step() > 0)
+	{
+		pixelClock = pixelClockRange.indexToValue(event.GetPosition());
+	}
+	else if(event.GetPosition() < pixelClockList.size())
+	{
+		pixelClock = pixelClockList[event.GetPosition()];
+	}
+	
+	if(pixelClock)
+	{
+		CurrentCamera->Camera->setPixelClock(pixelClock);
+	}
+	update();
+}
+
+void CameraTimingPanel::OnFrameTimeSlider(wxScrollEvent &event)
+{
+	ueye::Range<double> frameTimeRange = CurrentCamera->Camera->getFrameTimeRange();
+	double frameRate = 1.0/frameTimeRange.indexToValue(event.GetPosition());
+	CurrentCamera->Camera->setFrameRate(frameRate);
+	update();
+}
+
+void CameraTimingPanel::OnExposureSlider(wxScrollEvent &event)
+{
+	ueye::Range<double> exposureRange = CurrentCamera->Camera->getExposureRange();
+	double exposure = exposureRange.indexToValue(event.GetPosition());
+	CurrentCamera->Camera->setExposure(exposure);
+	update();
+}
+
+void CameraTimingPanel::update()
+{
+	if(CurrentCamera)
+	{
+		ueye::Camera *camera = CurrentCamera->Camera;
+		ueye::Range<uint32_t> pixelClockRange = camera->getPixelClockRange();
+		ueye::Range<double> frameTimeRange = camera->getFrameTimeRange();
+		ueye::Range<double> exposureRange = camera->getExposureRange();
+		std::vector<uint32_t> pixelClockList = camera->getPixelClockList();
+		if(pixelClockRange.step() > 0)
+		{
+			PixelClockSlider->SetRange(0, pixelClockRange.stepCount()-1);
+		}
+		else
+		{
+			PixelClockSlider->SetRange(0, pixelClockList.size()-1);
+		}
+		FrameTimeSlider->SetRange(0, frameTimeRange.stepCount()-1);
+		ExposureSlider->SetRange(0, exposureRange.stepCount()-1);
+		
+		uint32_t pixelClock = camera->getPixelClock();
+		double frameRate = camera->getFrameRate();
+		double exposure = camera->getExposure();
+		if(pixelClockRange.step() > 0)
+		{
+			PixelClockSlider->SetValue(pixelClockRange.valueToIndex(pixelClock));
+		}
+		else
+		{
+			auto it = std::find(pixelClockList.begin(), pixelClockList.end(), pixelClock);
+			if(it!=pixelClockList.end())
+				PixelClockSlider->SetValue(std::distance(pixelClockList.begin(), it));
+		}
+		FrameTimeSlider->SetValue(frameTimeRange.valueToIndex(1.0/frameRate));
+		ExposureSlider->SetValue(exposureRange.valueToIndex(exposure));
+		
+		PixelClockSlider->Enable(true);
+		FrameTimeSlider->Enable(true);
+		ExposureSlider->Enable(true);
+	}
+	else
+	{
+		PixelClockSlider->SetRange(0,0);
+		FrameTimeSlider->SetRange(0,0);
+		ExposureSlider->SetRange(0,0);
+		PixelClockSlider->Enable(false);
+		FrameTimeSlider->Enable(false);
+		ExposureSlider->Enable(false);
+	}
+}
+
+void CameraTimingPanel::setActiveCamera(CameraManager *cameraManager)
+{
+	CurrentCamera = cameraManager;
+	update();
+}
 
 DisplayPanel::DisplayPanel(wxWindow *parent):
 	wxNotebook(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0, "display panel"), DisplayRate(60.0)
@@ -409,15 +629,19 @@ DisplayPanel::DisplayPanel(wxWindow *parent):
 
 bool DisplayPanel::AddPage(wxWindow* page, const wxString& text, bool select, int imageId)
 {
+	CameraDisplay* display =  dynamic_cast<CameraDisplay*>(GetCurrentPage());
+	if(display)
+		display->stop();
+		
 	wxNotebook::AddPage(page, text, select, imageId);
-	CameraDisplay* display = dynamic_cast<CameraDisplay*>(page);
+	
+	display = dynamic_cast<CameraDisplay*>(page);
 	if(display)
 		display->start(1000.0/DisplayRate);
 }
 
 void DisplayPanel::OnPageChanged(wxBookCtrlEvent& event)
 {
-	std::cout<<"test"<<std::endl;
 	int old_page = event.GetOldSelection();
 	int new_page = event.GetSelection();
 	if(old_page != wxNOT_FOUND)
@@ -432,6 +656,7 @@ void DisplayPanel::OnPageChanged(wxBookCtrlEvent& event)
 		if(display)
 			display->start(1000.0/DisplayRate);
 	}
+	wxGetApp().updateCurrentCamera();
 }
 
 
@@ -563,7 +788,7 @@ void CameraManager::liveCaptureLoop()
 	ueye::ImageMemory *previous_frame = NULL;
 	while(!CaptureStop.load())
 	{
-		ueye::ImageMemory *frame = Camera->waitNextFrame();
+		ueye::ImageMemory *frame = Camera->waitNextFrame(4294967295);
 		Display->setImage(frame);
 		if(previous_frame)
 			Camera->unlockFrame(previous_frame);
